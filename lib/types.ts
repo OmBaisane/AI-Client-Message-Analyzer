@@ -4,6 +4,9 @@ export type AnalysisResult = {
   projectType: string;
   urgency: Urgency;
   requirements: string[];
+  missingInformation: string[];
+  suggestedReply: string;
+  actionItems: string[];
 };
 
 export type ConversationMessage = {
