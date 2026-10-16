@@ -2,32 +2,43 @@
 
 import { useState } from "react";
 
-export default function Home() {
-  const [message, setMessage] = useState("");
-  const [result, setResult] = useState<{
-    projectType: string;
-    urgency: string;
-    requirements: string[];
-  } | null>(null);
+import AppFooter from "@/components/app-footer";
+import AppHeader from "@/components/app-header";
+import AnalysisResults from "@/components/analysis-results";
+import AppSidebar from "@/components/app-sidebar";
+import FollowUpChat from "@/components/follow-up-chat";
+import MessageInput from "@/components/message-input";
 
-  const [streamedText, setStreamedText] = useState("");
-  const [streaming, setStreaming] = useState(false);
+import type { AnalysisResult, ConversationMessage } from "@/lib/types";
+
+export default function Page() {
+  const [message, setMessage] = useState("");
+  const [followUpInput, setFollowUpInput] = useState("");
+
+  const [result, setResult] = useState<AnalysisResult | null>(null);
 
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [streaming, setStreaming] = useState(false);
 
-  const [conversation, setConversation] = useState<
-    { role: "user" | "assistant"; content: string }[]
-  >([]);
+  const [streamedText, setStreamedText] = useState("");
+  const [conversation, setConversation] = useState<ConversationMessage[]>([]);
 
-  const handleAnalyze = async () => {
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+
+  const busy = loading || streaming;
+
+  async function handleAnalyze() {
     if (!message.trim()) {
-      alert("Please enter a client message.");
+      setAnalysisError("Please enter a client message first.");
       return;
     }
 
     setLoading(true);
-    setError("");
+    setAnalysisError(null);
     setResult(null);
 
     try {
@@ -37,41 +48,63 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message,
+          message: message.trim(),
         }),
       });
 
-      const data = await response.json();
+      const data: {
+        result?: AnalysisResult;
+        error?: string;
+      } = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || "Something went wrong.");
+        throw new Error(data.error || "Failed to analyze the message.");
+      }
+
+      if (
+        !data.result ||
+        typeof data.result.projectType !== "string" ||
+        !["Low", "Medium", "High"].includes(data.result.urgency) ||
+        !Array.isArray(data.result.requirements) ||
+        !data.result.requirements.every(
+          (requirement) => typeof requirement === "string",
+        )
+      ) {
+        throw new Error("The analysis response was invalid. Please try again.");
       }
 
       setResult(data.result);
     } catch (error) {
-      setError(
+      setAnalysisError(
         error instanceof Error
           ? error.message
-          : "Failed to analyze client message.",
+          : "Something went wrong while analyzing the message.",
       );
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleStream = async () => {
-    if (!message.trim()) {
-      setError("Please enter a message.");
+  async function handleStream() {
+    const userMessage = followUpInput.trim();
+
+    if (!userMessage) {
+      setChatError("Enter a follow-up question first.");
       return;
     }
 
-    setError("");
-    setStreamedText("");
     setStreaming(true);
-
-    const userMessage = message.trim();
+    setChatError(null);
+    setStreamedText("");
 
     try {
+      const context: ConversationMessage[] = [
+        ...(message.trim()
+          ? [{ role: "user" as const, content: message.trim() }]
+          : []),
+        ...conversation,
+      ];
+
       const response = await fetch("/api/stream", {
         method: "POST",
         headers: {
@@ -79,174 +112,173 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: userMessage,
-          conversation,
+          conversation: context,
         }),
       });
 
-      console.log(
-        "STREAM RESPONSE:",
-        response.status,
-        response.statusText,
-        response.ok,
-        response.headers.get("content-type"),
-      );
-
-      // Error only when response is NOT successful
       if (!response.ok) {
-        const data = await response.json().catch(() => null);
+        const data: { error?: string } | null = await response
+          .json()
+          .catch(() => null);
 
-        throw new Error(data?.error || "Failed to generate AI response.");
+        throw new Error(data?.error || "Failed to generate a response.");
       }
 
       if (!response.body) {
-        throw new Error("Streaming is not supported.");
+        throw new Error("Streaming is not available in this response.");
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
-      let assistantResponse = "";
+      let assistantMessage = "";
 
       while (true) {
-        const { value, done } = await reader.read();
+        const { done, value } = await reader.read();
 
-        if (done) break;
+        if (done) {
+          break;
+        }
 
-        const chunk = decoder.decode(value, { stream: true });
-
-        assistantResponse += chunk;
-
-        setStreamedText(assistantResponse);
+        assistantMessage += decoder.decode(value, { stream: true });
+        setStreamedText(assistantMessage);
       }
 
-      // Save both sides of the conversation
+      assistantMessage += decoder.decode();
+
       setConversation((current) => [
         ...current,
-        {
-          role: "user",
-          content: userMessage,
-        },
+        { role: "user", content: userMessage },
         {
           role: "assistant",
-          content: assistantResponse,
+          content: assistantMessage || "No response was generated.",
         },
       ]);
 
-      setMessage("");
+      setFollowUpInput("");
+      setStreamedText(assistantMessage);
     } catch (error) {
-      console.error("FRONTEND STREAM ERROR:", error);
-
-      setError(
+      setChatError(
         error instanceof Error
           ? error.message
-          : "Failed to generate AI response.",
+          : "Something went wrong. Please try again.",
       );
     } finally {
       setStreaming(false);
     }
-  };
+  }
+
+  async function copyText(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLabel(label);
+
+      window.setTimeout(() => {
+        setCopiedLabel((current) => (current === label ? null : current));
+      }, 1800);
+    } catch {
+      setAnalysisError(
+        "Clipboard access failed. Please select and copy the text manually.",
+      );
+    }
+  }
+
+  function resetWorkspace() {
+    if (busy) {
+      return;
+    }
+
+    setMessage("");
+    setFollowUpInput("");
+    setResult(null);
+    setStreamedText("");
+    setConversation([]);
+    setAnalysisError(null);
+    setChatError(null);
+    setCopiedLabel(null);
+  }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white p-6">
-      <div className="mx-auto max-w-2xl">
-        <h1 className="text-3xl font-bold">AI Client Analyzer</h1>
+    <div
+      id="workspace"
+      className="flex min-h-screen bg-[#080b14] text-slate-100"
+    >
+      <AppSidebar
+        mobileOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+      />
 
-        <p className="mt-2 text-slate-400">Analyze client messages using AI.</p>
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+        <AppHeader onMenuClick={() => setMobileMenuOpen(true)} />
 
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Paste client message here..."
-          className="mt-6 min-h-40 w-full rounded-lg border border-slate-700 bg-slate-900 p-4 outline-none"
-        />
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+          <section className="mb-8 max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-violet-400/15 bg-violet-400/6 px-3 py-1.5 text-xs font-medium text-violet-200">
+              <span className="size-1.5 rounded-full bg-violet-300" />
+              From client message to clear next steps
+            </div>
 
-        <button
-          type="button"
-          onClick={handleAnalyze}
-          className="mt-4 rounded-lg bg-blue-600 px-5 py-3 font-medium hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {loading ? "Analyzing..." : "Analyze Message"}
-        </button>
+            <h2 className="mt-5 text-3xl font-semibold tracking-tight text-white sm:text-4xl lg:text-[42px] lg:leading-[1.15]">
+              Understand the request.
+              <span className="mt-1 block bg-linear-to-r from-violet-300 via-indigo-200 to-sky-200 bg-clip-text text-transparent">
+                Plan the next move.
+              </span>
+            </h2>
 
-        <button
-          type="button"
-          onClick={handleStream}
-          disabled={streaming}
-          className="ml-4 rounded-lg bg-purple-600 px-5 py-3 font-medium disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {streaming ? "Streaming" : "Test Streaming"}
-        </button>
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-400 sm:text-base">
+              Turn unstructured client messages into organized project
+              requirements, an urgency estimate, and clearer follow-up
+              conversations.
+            </p>
+          </section>
 
-        {conversation.length > 0 && (
-          <div className="mt-6 space-y-4">
-            {conversation.map((item, index) => (
-              <div
-                key={index}
-                className="rounded-lg border border-slate-700 bg-slate-900 p-4"
-              >
-                <p className="text-sm font-medium text-slate-400">
-                  {item.role === "user" ? "You" : "AI"}
-                </p>
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+            <div className="min-w-0 space-y-6">
+              <MessageInput
+                message={message}
+                onMessageChange={setMessage}
+                onAnalyze={handleAnalyze}
+                onReset={resetWorkspace}
+                loading={loading}
+                error={analysisError}
+              />
 
-                <p className="mt-2 whitespace-pre-wrap text-slate-200">
-                  {item.content}
-                </p>
-              </div>
-            ))}
+              {result && (
+                <AnalysisResults
+                  result={result}
+                  onCopy={copyText}
+                  copiedLabel={copiedLabel}
+                />
+              )}
+            </div>
+
+            <div className="min-w-0 xl:sticky xl:top-25">
+              <FollowUpChat
+                conversation={conversation}
+                followUpInput={followUpInput}
+                onFollowUpInputChange={setFollowUpInput}
+                onSubmit={handleStream}
+                streamedText={streamedText}
+                streaming={streaming}
+                error={chatError}
+              />
+            </div>
           </div>
-        )}
 
-        {streamedText && (
-          <div className="mt-6 rounded-lg border border-purple-500/30 bg-slate-900 p-5">
-            <p className="text-sm font-medium text-purple-400">AI</p>
-
-            <p className="mt-2 whitespace-pre-wrap text-slate-200">
-              {streamedText}
+          <div className="mt-8 rounded-2xl border border-white/[0.07] bg-white/2 px-4 py-4 sm:px-5">
+            <p className="text-xs leading-6 text-slate-400">
+              <span className="font-medium text-slate-300">
+                Keep control of the decisions.
+              </span>{" "}
+              ClientBrief AI helps organize the information you provide. Always
+              confirm ambiguous requirements, final project scope, pricing, and
+              deadlines with the client yourself.
             </p>
           </div>
-        )}
+        </main>
 
-        {error && (
-          <div className="mt-6 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">
-            <p>{error}</p>
-
-            <button
-              type="button"
-              onClick={handleStream}
-              disabled={streaming}
-              className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {streaming ? "Retrying..." : "Retry"}
-            </button>
-          </div>
-        )}
-
-        {result && (
-          <div className="mt-6 rounded-lg border border-slate-700 bg-slate-900 p-5">
-            <h2 className="text-xl font-semibold">Analysis Result</h2>
-
-            <div className="mt-4">
-              <p className="text-sm text-slate-400">Project Type</p>
-              <p className="mt-1">{result.projectType}</p>
-            </div>
-
-            <div className="mt-4">
-              <p className="text-sm text-slate-400">Urgency</p>
-              <p className="mt-1">{result.urgency}</p>
-            </div>
-
-            <div className="mt-4">
-              <p className="text-sm text-slate-400">Requirements</p>
-
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {result.requirements.map((requirement, index) => (
-                  <li key={index}>{requirement}</li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        )}
+        <AppFooter />
       </div>
-    </main>
+    </div>
   );
 }
