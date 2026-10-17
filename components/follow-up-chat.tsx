@@ -15,6 +15,7 @@ type FollowUpChatProps = {
   followUpInput: string;
   onFollowUpInputChange: (value: string) => void;
   onSubmit: () => void;
+  onCancel: () => void;
   streamedText: string;
   streaming: boolean;
   error: string | null;
@@ -25,6 +26,7 @@ export default function FollowUpChat({
   followUpInput,
   onFollowUpInputChange,
   onSubmit,
+  onCancel,
   streamedText,
   streaming,
   error,
@@ -115,24 +117,37 @@ export default function FollowUpChat({
         ))}
 
         {streaming && (
-          <div className="flex items-start gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-violet-400/10 text-violet-300">
-              <Bot size={16} />
+          <>
+            <div className="flex items-start gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-violet-400/10 text-violet-300">
+                <Bot size={16} />
+              </div>
+
+              <div className="max-w-[88%] rounded-2xl border border-white/6 bg-white/2.5 px-4 py-3 text-sm leading-6 text-slate-300">
+                {streamedText ? (
+                  <p className="whitespace-pre-wrap wrap-break-word">
+                    {streamedText}
+                  </p>
+                ) : (
+                  <span className="inline-flex items-center gap-2 text-slate-400">
+                    <LoaderCircle size={14} className="animate-spin" />
+                    Thinking...
+                  </span>
+                )}
+              </div>
             </div>
 
-            <div className="max-w-[88%] rounded-2xl border border-white/6 bg-white/2.5 px-4 py-3 text-sm leading-6 text-slate-300">
-              {streamedText ? (
-                <p className="whitespace-pre-wrap wrap-break-word">
-                  {streamedText}
-                </p>
-              ) : (
-                <span className="inline-flex items-center gap-2 text-slate-400">
-                  <LoaderCircle size={14} className="animate-spin" />
-                  Thinking...
-                </span>
-              )}
+            <div className="flex justify-center pb-2 pl-11">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="inline-flex items-center gap-2 rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs font-medium text-rose-200 transition hover:border-rose-400/40 hover:bg-rose-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
+              >
+                <span className="size-2 rounded-sm bg-rose-300" />
+                Cancel response
+              </button>
             </div>
-          </div>
+          </>
         )}
       </div>
 

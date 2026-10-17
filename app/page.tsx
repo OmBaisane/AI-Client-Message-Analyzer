@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import AppFooter from "@/components/app-footer";
 import AppHeader from "@/components/app-header";
@@ -21,6 +21,7 @@ export default function Page() {
   const [streaming, setStreaming] = useState(false);
 
   const [streamedText, setStreamedText] = useState("");
+  const streamAbortRef = useRef<AbortController>(null);
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
 
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -30,6 +31,12 @@ export default function Page() {
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
 
   const busy = loading || streaming;
+
+  useEffect(() => {
+    return () => {
+      streamAbortRef.current?.abort();
+    };
+  }, []);
 
   async function handleAnalyze() {
     if (!message.trim()) {
@@ -88,8 +95,7 @@ export default function Page() {
   async function handleStream() {
     const userMessage = followUpInput.trim();
 
-    if (!userMessage) {
-      setChatError("Enter a follow-up question first.");
+    if (!userMessage || streaming) {
       return;
     }
 
@@ -97,19 +103,26 @@ export default function Page() {
     setChatError(null);
     setStreamedText("");
 
-    try {
-      const context: ConversationMessage[] = [
-        ...(message.trim()
-          ? [{ role: "user" as const, content: message.trim() }]
-          : []),
-        ...conversation,
-      ];
+    const context: ConversationMessage[] = [
+      ...(message.trim()
+        ? [{ role: "user" as const, content: message.trim() }]
+        : []),
+      ...conversation,
+    ];
 
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let assistantMessage = "";
+
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
+
+    try {
       const response = await fetch("/api/stream", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
+        signal: abortController.signal,
         body: JSON.stringify({
           message: userMessage,
           conversation: context,
@@ -128,10 +141,11 @@ export default function Page() {
         throw new Error("Streaming is not available in this response.");
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      reader = response.body.getReader();
 
-      let assistantMessage = "";
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -140,32 +154,122 @@ export default function Page() {
           break;
         }
 
-        assistantMessage += decoder.decode(value, { stream: true });
-        setStreamedText(assistantMessage);
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+
+          let event: {
+            type?: string;
+            text?: string;
+            message?: string;
+          };
+
+          try {
+            event = JSON.parse(line);
+          } catch {
+            throw new Error("Received an invalid streaming response.");
+          }
+
+          if (event.type === "chunk" && typeof event.text === "string") {
+            assistantMessage += event.text;
+            setStreamedText(assistantMessage);
+          } else if (event.type === "done") {
+            completed = true;
+          } else if (event.type === "error") {
+            throw new Error(
+              event.message ||
+                "The AI response was interrupted. Please try again.",
+            );
+          } else {
+            throw new Error("Received an unexpected streaming event.");
+          }
+        }
       }
 
-      assistantMessage += decoder.decode();
+      buffer += decoder.decode();
+
+      if (buffer.trim()) {
+        let finalEvent: {
+          type?: string;
+          text?: string;
+          message?: string;
+        };
+
+        try {
+          finalEvent = JSON.parse(buffer);
+        } catch {
+          throw new Error("Received an incomplete streaming response.");
+        }
+
+        if (
+          finalEvent.type === "chunk" &&
+          typeof finalEvent.text === "string"
+        ) {
+          assistantMessage += finalEvent.text;
+          setStreamedText(assistantMessage);
+        } else if (finalEvent.type === "done") {
+          completed = true;
+        } else if (finalEvent.type === "error") {
+          throw new Error(
+            finalEvent.message ||
+              "The AI response was interrupted. Please try again.",
+          );
+        } else {
+          throw new Error("Received an unexpected streaming event.");
+        }
+      }
+
+      if (!completed) {
+        throw new Error(
+          "The AI response ended before completion. Please retry.",
+        );
+      }
+
+      if (!assistantMessage.trim()) {
+        throw new Error("The AI returned an empty response. Please try again.");
+      }
 
       setConversation((current) => [
         ...current,
         { role: "user", content: userMessage },
-        {
-          role: "assistant",
-          content: assistantMessage || "No response was generated.",
-        },
+        { role: "assistant", content: assistantMessage },
       ]);
 
       setFollowUpInput("");
-      setStreamedText(assistantMessage);
     } catch (error) {
-      setChatError(
-        error instanceof Error
-          ? error.message
-          : "Something went wrong. Please try again.",
-      );
+      if (error instanceof Error && error.name === "AbortError") {
+        setChatError(null);
+        setStreamedText("");
+      } else {
+        setChatError(
+          error instanceof Error
+            ? error.message
+            : "Something went wrong. Please try again.",
+        );
+        setStreamedText("");
+      }
     } finally {
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+
+      if (streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+      }
+
       setStreaming(false);
     }
+  }
+
+  function handleCancelStream() {
+    streamAbortRef.current?.abort();
   }
 
   async function copyText(text: string, label: string) {
@@ -258,6 +362,7 @@ export default function Page() {
                 followUpInput={followUpInput}
                 onFollowUpInputChange={setFollowUpInput}
                 onSubmit={handleStream}
+                onCancel={handleCancelStream}
                 streamedText={streamedText}
                 streaming={streaming}
                 error={chatError}
