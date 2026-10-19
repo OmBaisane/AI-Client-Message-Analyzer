@@ -64,7 +64,7 @@ button {
 }
 
 textarea {
-  resize: vertical;
+  resize: none;
 }
 
 :focus-visible {
